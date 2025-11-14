@@ -135,16 +135,81 @@ void GetLocalIPandMAC(const string device_name, byte mac[6])
 		}
 	}
 }
+void arp_capture(pcap_t* handle, pcap_if_t* device)
+{
+	byte localIP[4];				// 需要打开设备的IP
+	byte targetIP[4];				// 目标IP
+	byte localMAC[6];				// 本机MAC地址
+	byte packet[42];				// 数据包
+	// 输入目标地址的IP
+	string targetip;
+	cout << "Please enter the target IP address:";
+	cin >> targetip;
+	inet_pton(AF_INET, targetip.c_str(), targetIP);
 
+	// 获取该设备的IP以及MAC
+	struct sockaddr_in* sin = (struct sockaddr_in*)device->addresses->addr;
+	DWORD ip = sin->sin_addr.S_un.S_addr; // 网络字节序，转换IP的格式
+	memcpy(localIP, &ip, 4);
+	GetLocalIPandMAC(device->name, localMAC);
+	cout << "Source IP and MAC: " << inet_ntoa(sin->sin_addr) << " -> ";
+	print_MAC(localMAC);
+
+	// 构造ARP报文
+	EthernetHeader* eth = (EthernetHeader*)packet;
+	ARP* arp = (ARP*)(packet + sizeof(EthernetHeader));
+	// 以太网帧头部
+	memset(eth->dstMAC, 0xFF, 6);	// 广播所有设备
+	memcpy(eth->srcMAC, localMAC, 6);
+	eth->ethertype = htons(0x0806);	// ARP协议
+	// ARP报文
+	arp->hardware = htons(0x0001);	// 硬件类型为以太网
+	arp->protocol = htons(0x0800);
+	arp->MAC_length = 6;
+	arp->IPaddress_length = 4;
+	arp->opcode = htons(0x0001);
+	memcpy(arp->srcIP, localIP, 4);
+	memcpy(arp->dstIP, targetIP, 4);
+	memcpy(arp->srcMAC, localMAC, 6);
+	memset(arp->dstMAC, 0, 6);
+
+	// pcap_sendpacket()函数能够利用网卡设备的句柄发送数据包
+	if (pcap_sendpacket(handle, packet, 42) != 0)
+	{
+		cerr << "Error sending ARP request." << endl;
+		return;
+	}
+	// 捕获ARP数据包
+	struct pcap_pkthdr* header;
+	const u_char* recv_data;
+	int res;
+	while ((res = pcap_next_ex(handle, &header, &recv_data)) >= 0)
+	{
+		if (res == 0) continue;
+		// 解析以太网帧
+		EthernetHeader* recv_eth = (EthernetHeader*)recv_data;
+		if (ntohs(recv_eth->ethertype) == 0x0806)
+		{
+			// 解析ARP数据包
+			ARP* recv_arp = (ARP*)(recv_data + sizeof(EthernetHeader));
+			if (ntohs(recv_arp->opcode) == 2)
+			{
+				// 验证IP，返回的数据包中的IP是否和目标IP一致
+				if (memcmp(recv_arp->srcIP, targetIP, 4) == 0)
+				{
+					cout << "Target IP and MAC: " << targetip << " -> ";
+					print_MAC(recv_arp->srcMAC);
+					break;
+				}
+			}
+		}
+	}
+}
 int main()
 {
 	pcap_if_t* alldevices;			// 设备列表的存储链表
 	pcap_if_t* device;				// 遍历指针
 	char errbuf[PCAP_ERRBUF_SIZE];	// 存储错误信息，256字节
-	byte localIP[4];				// 需要打开设备的IP
-	byte targetIP[4];				// 目标IP
-	byte localMAC[6];				// 本机MAC地址
-	byte packet[42];				// 数据包
 	int count;						// 可用设备数量
 
 	cout << "=================================Devices List=================================" << endl;
@@ -171,69 +236,8 @@ int main()
 	}
 	cout << "Successfully open network device:" << device->name << endl;
 	
-	// 输入目标地址的IP
-	string targetip;
-	cout << "Please enter the target IP address:";
-	cin >> targetip;
-	inet_pton(AF_INET, targetip.c_str(), targetIP);
-
-	// 获取该设备的IP以及MAC
-	struct sockaddr_in* sin = (struct sockaddr_in*)device->addresses->addr;
-	DWORD ip = sin->sin_addr.S_un.S_addr; // 网络字节序，转换IP的格式
-	memcpy(localIP, &ip, 4);
-	GetLocalIPandMAC(device->name, localMAC);
-	cout << "Source IP and MAC: " << inet_ntoa(sin->sin_addr) << " -> ";
-	print_MAC(localMAC);
-
-	// 构造ARP报文
-	EthernetHeader* eth = (EthernetHeader*)packet;
-	ARP* arp = (ARP*)(packet + sizeof(EthernetHeader));
-	// 以太网帧头部
-	memset(eth->dstMAC, 0xFF, 6);	// 广播所有设备
-	memcpy(eth->srcMAC, localMAC, 6);
-	eth->ethertype = htons(0x0806);	// ARP协议
-	// ARP报文
-	arp->hardware = htons(0x0001);	// 硬件类型为以太网
-	arp->protocol = htons(0x0800);	
-	arp->MAC_length = 6;
-	arp->IPaddress_length = 4;
-	arp->opcode = htons(0x0001);
-	memcpy(arp->srcIP, localIP, 4);
-	memcpy(arp->dstIP, targetIP, 4);
-	memcpy(arp->srcMAC, localMAC, 6);
-	memset(arp->dstMAC, 0, 6);
-	
-	// pcap_sendpacket()函数能够利用网卡设备的句柄发送数据包
-	if (pcap_sendpacket(handle, packet, 42) != 0)
-	{
-		cerr << "Error sending ARP request." << endl;
-		return -1;
-	}
-	// 捕获ARP数据包
-	struct pcap_pkthdr* header;
-	const u_char* recv_data;
-	int res;
-	while ((res = pcap_next_ex(handle, &header, &recv_data)) >= 0) 
-	{
-		if (res == 0) continue;
-		// 解析以太网帧
-		EthernetHeader* recv_eth = (EthernetHeader*)recv_data;
-		if (ntohs(recv_eth->ethertype) == 0x0806) 
-		{
-			// 解析ARP数据包
-			ARP* recv_arp = (ARP*)(recv_data + sizeof(EthernetHeader));
-			if (ntohs(recv_arp->opcode) == 2) 
-			{
-				// 验证IP，返回的数据包中的IP是否和目标IP一致
-				if (memcmp(recv_arp->srcIP, targetIP, 4) == 0)
-				{
-					cout << "Target IP and MAC: " << targetip << " -> ";
-					print_MAC(recv_arp->srcMAC);
-					break;
-				}
-			}
-		}
-	}
+	// 构造并捕获arp数据包
+	arp_capture(handle, device);
 
 	pcap_close(handle);
 	pcap_freealldevs(alldevices);
