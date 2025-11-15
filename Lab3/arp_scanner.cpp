@@ -135,6 +135,7 @@ void GetLocalIPandMAC(const string device_name, byte mac[6])
 		}
 	}
 }
+// 构造并捕获arp数据包
 void arp_capture(pcap_t* handle, pcap_if_t* device)
 {
 	byte localIP[4];				// 需要打开设备的IP
@@ -234,7 +235,7 @@ int main()
 		cerr << "ERROR:" << errbuf << endl;
 		return 1;
 	}
-	cout << "Successfully open network device:" << device->name << endl;
+	cout << "Successfully open network device:" << device->description << endl;
 	
 	// 构造并捕获arp数据包
 	arp_capture(handle, device);
